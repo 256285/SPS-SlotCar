@@ -1,0 +1,5 @@
+Debug/
+.mcp.json
+*.theia-workspace
+.theia/
+.vscode/

@@ -41,6 +41,6 @@
 #define MOTOR_PWM_PERIOD  800
 
 void Motor_init(void);
-void Motor_setSpeed(uint8_t percent);   // střída PWM 0 - 100 %
+void Motor_setSpeed(int8_t percent);   // střída PWM 0 - 100 %
 
 #endif /* MOTOR_H_ */

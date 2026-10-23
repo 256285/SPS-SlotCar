@@ -29,5 +29,5 @@ void RGB_LED_init(void)
     //default cervena on
     RGB_BLUE_OFF();
     RGB_GREEN_OFF();
-    RGB_RED_ON()
+    RGB_RED_ON();
 }

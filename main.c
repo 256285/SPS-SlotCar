@@ -1,19 +1,20 @@
 #include <msp430.h>
 #include <stdint.h>
-
+#include "include/UART.h"
 #include "include/I2C.h"
 #include "include/LED.h"
 #include "include/motor.h"
 #include "include/main.h"
 #include "include/L3GD20H.h"
-
+#include "include/logging.h"
+#include "include/track.h"
 
 #define I2C_RX_BUFFER_SIZE       6
 
-#define TURN_ON_THRESHOLD        5000
-#define TURN_OFF_THRESHOLD       1500
+#define TURN_ON_THRESHOLD        4000
+#define TURN_OFF_THRESHOLD       1200
 
-#define SPEED_STRAIGHT           75
+#define SPEED_STRAIGHT           65                 //v0 =65 = 1m/s; 
 #define SPEED_TURN               65
 
 #define GYRO_CAL_SAMPLES         32
@@ -24,12 +25,7 @@
 #define LOOP_DELAY               144000
 
 
-typedef enum
-{
-    STRAIGHT,
-    LEFT_TURN,
-    RIGHT_TURN
-} TurnState;
+
 
 
 /* Functions */
@@ -95,7 +91,7 @@ int main(void)
     I2C_write_byte(CTRL4, BIT7);
 
     __delay_cycles(3200000);
-
+    UART_init();
 
     /* Outputs */
 
@@ -108,31 +104,57 @@ int main(void)
 
 
     /* Gyroscope calibration */
-
+ 
     calibrateYawOffset();
 
 
     /* Initialization finished */
 
     RGB_RED_OFF();
-
+    Log_init();  
+    __delay_cycles(32000000);
     Motor_setSpeed(SPEED_STRAIGHT);
 
 
     /* Main loop */
 
     while (1)
-    {
-        readGyroscope();
 
+    {   readGyroscope();
         yaw = (int32_t)gyroZ - yawOffset;
-
         updateTurnState();
         updateOutputs();
-
-        __delay_cycles(LOOP_DELAY);
+       /* if(Track_isDone())
+        {
+            Track_send();
+            Log_send();
+        }*/
+     if (warmup < WARMUP_SAMPLES)
+    {
+        warmup++;                       // auto se ještě rozjíždí
+        RGB_RED_ON();
     }
+    else
+    {
+        RGB_RED_OFF();
+        Log_add((int16_t)yaw);          // loguj až po rozjezdu
+        if (Track_update(turnState))
+        {
+            RGB_GREEN_ON();
+        }
+        if (Track_sigReady()) RGB_BLUE_OFF();
+        else                  RGB_BLUE_ON();
+        if (Track_overflow()) RGB_RED_ON();
+    }
+        
+    }
+      
+       // UART_send_int(turnState);
+       // UART_send_string("\r\n");
+       
+    
 }
+
 
 
 /* Gyroscope read */
@@ -379,6 +401,12 @@ void initClockTo16MHz(void)
     while (SFRIFG1 & OFIFG);
 }
 
+void Sampling_timer_init(void)
+{
+    TA0CCR0  = (16000000UL / 8 / SAMPLE_RATE_HZ) - 1;   // SMCLK 16 MHz / 8
+    TA0CCTL0 = CCIE;
+    TA0CTL   = TASSEL_2 | ID_3 | MC_1 | TACLR;
+}   
 
 /* Sensor reset */
 

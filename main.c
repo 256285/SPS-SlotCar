@@ -14,15 +14,18 @@
 #define TURN_ON_THRESHOLD        4000
 #define TURN_OFF_THRESHOLD       1200
 
-#define SPEED_STRAIGHT           65                 //v0 =65 = 1m/s; 
-#define SPEED_TURN               65
+#define SPEED_LEARN              15                 // původní PWM ~65 = odhad 1m/s
+#define SPEED_RACE_STRAIGHT      30                 // původní 65 odpovídá 12,5
+#define SPEED_RACE_TURN          8
+
+#define BRAKE_LEAD_TICKS         300
+#define TURN_ACCEL_PERCENT       80
 
 #define GYRO_CAL_SAMPLES         32
 #define GYRO_WARMUP_SAMPLES      20
 
 #define I2C_READ_DELAY           16000
 #define GYRO_SAMPLE_DELAY        160000
-#define LOOP_DELAY               144000
 
 
 
@@ -91,7 +94,9 @@ int main(void)
     I2C_write_byte(CTRL4, BIT7);
 
     __delay_cycles(3200000);
+
     UART_init();
+
 
     /* Outputs */
 
@@ -104,57 +109,83 @@ int main(void)
 
 
     /* Gyroscope calibration */
- 
+
     calibrateYawOffset();
 
 
     /* Initialization finished */
 
     RGB_RED_OFF();
-    Log_init();  
+
     __delay_cycles(32000000);
-    Motor_setSpeed(SPEED_STRAIGHT);
+
+
+    /* Tracking */
+
+    Track_reset();
+
+    warmup = 0;
+
+    Log_init();
+
+    Motor_setSpeed(SPEED_LEARN);
 
 
     /* Main loop */
 
     while (1)
+    {
+        if (!Log_sampleReady())
+            continue;
 
-    {   readGyroscope();
+
+        readGyroscope();
+
         yaw = (int32_t)gyroZ - yawOffset;
+
         updateTurnState();
-        updateOutputs();
-       /* if(Track_isDone())
+
+
+        /* if(Track_isDone())
         {
             Track_send();
             Log_send();
-        }*/
-     if (warmup < WARMUP_SAMPLES)
-    {
-        warmup++;                       // auto se ještě rozjíždí
-        RGB_RED_ON();
-    }
-    else
-    {
-        RGB_RED_OFF();
-        Log_add((int16_t)yaw);          // loguj až po rozjezdu
-        if (Track_update(turnState))
-        {
-            RGB_GREEN_ON();
-        }
-        if (Track_sigReady()) RGB_BLUE_OFF();
-        else                  RGB_BLUE_ON();
-        if (Track_overflow()) RGB_RED_ON();
-    }
-        
-    }
-      
-       // UART_send_int(turnState);
-       // UART_send_string("\r\n");
-       
-    
-}
+        } */
 
+
+        if (warmup < WARMUP_SAMPLES)
+        {
+            warmup++;                       // auto se ještě rozjíždí
+            RGB_RED_ON();
+        }
+        else
+        {
+            RGB_RED_OFF();
+
+            Log_add((int16_t)yaw);          // loguj až po rozjezdu
+
+            if (Track_update(turnState, yaw))
+            {
+                RGB_GREEN_ON();
+            }
+
+            if (Track_sigReady())
+                RGB_BLUE_OFF();
+            else
+                RGB_BLUE_ON();
+
+            if (Track_overflow())
+                RGB_RED_ON();
+        }
+
+
+        updateOutputs();
+    }
+
+
+    // UART_send_int(turnState);
+    // UART_send_string("\r\n");
+}
 
 
 /* Gyroscope read */
@@ -274,6 +305,15 @@ static void updateTurnState(void)
 
 static void updateOutputs(void)
 {
+    uint8_t currentType;
+    uint8_t nextType;
+
+    uint16_t predictedTicks;
+    uint16_t segmentTicks;
+
+
+    /* LEDs */
+
     switch (turnState)
     {
     case LEFT_TURN:
@@ -285,8 +325,6 @@ static void updateOutputs(void)
 
         LED_FR_OFF();
         LED_RR_OFF();
-
-        Motor_setSpeed(SPEED_TURN);
 
         break;
 
@@ -301,8 +339,6 @@ static void updateOutputs(void)
         LED_FL_OFF();
         LED_RL_OFF();
 
-        Motor_setSpeed(SPEED_TURN);
-
         break;
 
 
@@ -315,9 +351,70 @@ static void updateOutputs(void)
         LED_FR_OFF();
         LED_RR_OFF();
 
-        Motor_setSpeed(SPEED_STRAIGHT);
-
         break;
+    }
+
+
+    /* Learning */
+
+    if (!Track_isDone())
+    {
+        Motor_setSpeed(SPEED_LEARN);
+
+        return;
+    }
+
+
+    /* Race */
+
+    currentType =
+        Track_currentType();
+
+    nextType =
+        Track_nextType();
+
+
+    /* Straight */
+
+    if (currentType == STRAIGHT)
+    {
+        predictedTicks =
+            Track_predictedTicks();
+
+        segmentTicks =
+            Track_segmentTicks();
+
+
+        /* Brake before turn */
+
+        if ((nextType != STRAIGHT)
+            && (predictedTicks > BRAKE_LEAD_TICKS)
+            && (segmentTicks >=
+                predictedTicks - BRAKE_LEAD_TICKS))
+        {
+            Motor_setSpeed(SPEED_RACE_TURN);
+        }
+        else
+        {
+            Motor_setSpeed(SPEED_RACE_STRAIGHT);
+        }
+    }
+
+
+    /* Turn */
+
+    else
+    {
+        /* Accelerate before exit */
+
+        if (Track_turnProgressReached(TURN_ACCEL_PERCENT))
+        {
+            Motor_setSpeed(SPEED_RACE_STRAIGHT);
+        }
+        else
+        {
+            Motor_setSpeed(SPEED_RACE_TURN);
+        }
     }
 }
 
@@ -401,12 +498,14 @@ void initClockTo16MHz(void)
     while (SFRIFG1 & OFIFG);
 }
 
+
 void Sampling_timer_init(void)
 {
     TA0CCR0  = (16000000UL / 8 / SAMPLE_RATE_HZ) - 1;   // SMCLK 16 MHz / 8
     TA0CCTL0 = CCIE;
     TA0CTL   = TASSEL_2 | ID_3 | MC_1 | TACLR;
-}   
+}
+
 
 /* Sensor reset */
 
